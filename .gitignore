@@ -1,7 +1,7 @@
-cmd/tests
-config/config.yaml
-log/
-result/
-store/
-bin/
-bbolt/
+#cmd/tests
+#config/config.yaml
+#log/
+#result/
+#store/
+#bin/
+#bbolt/
