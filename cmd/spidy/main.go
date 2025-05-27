@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 
 	"github.com/gorilla/websocket"
-	"github.com/twiny/spidy/v2/cmd/spidy/api"
-	"github.com/twiny/spidy/v2/internal/pkg/spider/v1"
+	"github.com/twiny/spidy/tree/main/cmd/spidy/api"
+	"github.com/twiny/spidy/tree/main/internal/pkg/spider/v1"
 )
 
 var upgrader = websocket.Upgrader{
