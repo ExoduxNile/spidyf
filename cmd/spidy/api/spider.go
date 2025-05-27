@@ -12,12 +12,10 @@ import (
 	"sync"
 	"syscall"
 
-	//
+	"github.com/gorilla/websocket"
 	"github.com/twiny/spidy/v2/internal/pkg/spider/v1"
 	"github.com/twiny/spidy/v2/internal/service/cache"
 	"github.com/twiny/spidy/v2/internal/service/writer"
-
-	//
 	"github.com/twiny/domaincheck"
 	"github.com/twiny/flog"
 	"github.com/twiny/wbot"
@@ -28,22 +26,23 @@ var Version string
 
 // Spider
 type Spider struct {
-	wg      *sync.WaitGroup
-	setting *spider.Setting
-	bot     *wbot.WBot
-	pages   chan *spider.Page
-	check   *domaincheck.Checker
-	store   spider.Storage
-	write   spider.Writer
-	log     *flog.Logger
+	wg         *sync.WaitGroup
+	setting    *spider.Setting
+	bot        *wbot.WBot
+	pages      chan *spider.Page
+	check      *domaincheck.Checker
+	store      spider.Storage
+	write      spider.Writer
+	log        *flog.Logger
+	resultChan chan Result
+	clients    map[*websocket.Conn]bool
+	clientsMu  sync.Mutex
 }
 
 // NewSpider
 func NewSpider(fp string) (*Spider, error) {
-	// get settings
 	setting := spider.ParseSetting(fp)
 
-	// crawler opts
 	opts := []wbot.Option{
 		wbot.SetParallel(setting.Parralle),
 		wbot.SetMaxDepth(setting.Crawler.MaxDepth),
@@ -60,13 +59,11 @@ func NewSpider(fp string) (*Spider, error) {
 		return nil, err
 	}
 
-	// store
 	store, err := cache.NewCache(setting.Store.TTL, setting.Store.Path)
 	if err != nil {
 		return nil, err
 	}
 
-	// logger
 	log, err := flog.NewLogger(setting.Log.Path, "spidy", setting.Log.Rotate)
 	if err != nil {
 		return nil, err
@@ -78,39 +75,74 @@ func NewSpider(fp string) (*Spider, error) {
 	}
 
 	return &Spider{
-		wg:      &sync.WaitGroup{},
-		setting: setting,
-		bot:     bot,
-		pages:   make(chan *spider.Page, setting.Parralle),
-		check:   check,
-		store:   store,
-		write:   write,
-		log:     log,
+		wg:         &sync.WaitGroup{},
+		setting:    setting,
+		bot:        bot,
+		pages:      make(chan *spider.Page, setting.Parralle),
+		check:      check,
+		store:      store,
+		write:      write,
+		log:        log,
+		resultChan: make(chan Result, 100),
+		clients:    make(map[*websocket.Conn]bool),
 	}, nil
+}
+
+// RegisterWebSocket
+func RegisterWebSocket(conn *websocket.Conn) {
+	sp := getSpiderInstance()
+	sp.clientsMu.Lock()
+	sp.clients[conn] = true
+	sp.clientsMu.Unlock()
+
+	go func() {
+		for result := range sp.resultChan {
+			sp.clientsMu.Lock()
+			for client := range sp.clients {
+				err := client.WriteJSON(result)
+				if err != nil {
+					client.Close()
+					delete(sp.clients, client)
+				}
+			}
+			sp.clientsMu.Unlock()
+		}
+	}()
+}
+
+// Singleton for Spider instance (simplified for example)
+var (
+	spiderInstance *Spider
+	spiderMu       sync.Mutex
+)
+
+func getSpiderInstance() *Spider {
+	spiderMu.Lock()
+	defer spiderMu.Unlock()
+	return spiderInstance
 }
 
 // Start
 func (s *Spider) Start(links []string) error {
-	// go crawl
+	spiderMu.Lock()
+	spiderInstance = s
+	spiderMu.Unlock()
+
 	s.wg.Add(len(links))
 	for _, link := range links {
 		go func(l string) {
 			defer s.wg.Done()
-			//
 			if err := s.bot.Crawl(l); err != nil {
 				s.log.Error(err.Error(), map[string]string{"url": l})
 			}
 		}(link)
 	}
 
-	// check domains
 	s.wg.Add(s.setting.Parralle)
 	for i := 0; i < s.setting.Parralle; i++ {
 		go func() {
 			defer s.wg.Done()
-			// results
 			for res := range s.bot.Stream() {
-				// if response is ok
 				if res.Status != http.StatusOK {
 					s.log.Info("bad HTTP status", map[string]string{
 						"url":    res.URL.String(),
@@ -119,14 +151,9 @@ func (s *Spider) Start(links []string) error {
 					continue
 				}
 
-				// extract domains
 				domains := spider.FindDomains(res.Body)
-
-				// check availability
 				for _, domain := range domains {
 					root := fmt.Sprintf("%s.%s", domain.Name, domain.TLD)
-
-					// check if allowed extension
 					if len(s.setting.TLDs) > 0 {
 						if ok := s.setting.TLDs[domain.TLD]; !ok {
 							s.log.Info("unsupported domain", map[string]string{
@@ -137,7 +164,6 @@ func (s *Spider) Start(links []string) error {
 						}
 					}
 
-					// skip if already checked
 					if s.store.HasChecked(root) {
 						s.log.Info("already checked", map[string]string{
 							"domain": root,
@@ -146,7 +172,6 @@ func (s *Spider) Start(links []string) error {
 						continue
 					}
 
-					//
 					ctx, cancel := context.WithTimeout(context.Background(), s.setting.Timeout)
 					defer cancel()
 
@@ -159,7 +184,6 @@ func (s *Spider) Start(links []string) error {
 						continue
 					}
 
-					// save domain
 					if err := s.write.Write(&spider.Domain{
 						URL:    res.URL.String(),
 						Name:   domain.Name,
@@ -173,7 +197,13 @@ func (s *Spider) Start(links []string) error {
 						continue
 					}
 
-					// terminal print
+					// Send result to WebSocket clients
+					s.resultChan <- Result{
+						Domain: root,
+						Status: status.String(),
+						URL:    res.URL.String(),
+					}
+
 					fmt.Printf("[Spidy] == domain: %s - status %s\n", root, status.String())
 				}
 			}
@@ -181,19 +211,18 @@ func (s *Spider) Start(links []string) error {
 	}
 
 	s.wg.Wait()
+	close(s.resultChan)
 	return nil
 }
 
 // Shutdown
 func (s *Spider) Shutdown() error {
-	// attempt graceful shutdown
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
 	<-sigs
 	log.Println("shutting down ...")
 
-	// 2nd ctrl+c kills program
 	go func() {
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
@@ -206,6 +235,9 @@ func (s *Spider) Shutdown() error {
 	s.log.Close()
 	if err := s.store.Close(); err != nil {
 		return err
+	}
+	for conn := range s.clients {
+		conn.Close()
 	}
 	os.Exit(0)
 	return nil

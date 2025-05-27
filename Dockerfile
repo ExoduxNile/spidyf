@@ -1,41 +1,26 @@
-# Build stage
-FROM golang:1.21 as builder
+# Use official Go image as the base image
+FROM golang:1.21
 
-# Install Fyne dependencies and build tools
-RUN apt-get update && apt-get install -y \
-    libgl1-mesa-dev \
-    xorg-dev \
-    libgles2-mesa-dev \
-    gcc \
-    g++ \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
+# Set working directory inside the container
 WORKDIR /app
-COPY . .
 
-# Download Go modules
-RUN go mod download
+# Copy go.mod and go.sum to download dependencies
+COPY go.mod go.sum ./
 
-# Explicitly install Fyne (usually optional, but safe here)
-RUN go get fyne.io/fyne/v2@latest
+# Download dependencies
+RUN go mod tidy
 
-# Build with CGO enabled (required for Fyne)
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o bin/spidy-gui cmd/spidy-gui
+# Copy source code, static files, and configuration
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY static/ ./static/
+COPY config/ ./config/
 
-# Final stage
-FROM ubuntu:22.04
+# Build the application
+RUN go build -o bin/spidy -v cmd/spidy/main.go
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    libgl1 \
-    libx11-6 \
-    libegl1 \
-    xvfb \
-    && rm -rf /var/lib/apt/lists/*
+# Expose port 8080 for the web server
+EXPOSE 8080
 
-# 🔥 FIX: Correct binary path
-COPY --from=builder /app/bin/spidy-gui /spidy-gui
-
-# Set up virtual display and run GUI app
-CMD ["/bin/bash", "-c", "Xvfb :99 -screen 0 1024x768x24 & export DISPLAY=:99 && /spidy-gui"]
+# Command to run the application
+CMD ["./bin/spidy"]
