@@ -17,7 +17,7 @@ COPY . .
 # Download Go modules
 RUN go mod download
 
-# Explicitly install Fyne (required for some systems)
+# Explicitly install Fyne (usually optional, but safe here)
 RUN go get fyne.io/fyne/v2@latest
 
 # Build with CGO enabled (required for Fyne)
@@ -34,7 +34,8 @@ RUN apt-get update && apt-get install -y \
     xvfb \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /spidy-gui /spidy-gui
+# 🔥 FIX: Correct binary path
+COPY --from=builder /app/bin/spidy-gui /spidy-gui
 
-# Set up virtual display and run
+# Set up virtual display and run GUI app
 CMD ["/bin/bash", "-c", "Xvfb :99 -screen 0 1024x768x24 & export DISPLAY=:99 && /spidy-gui"]
