@@ -21,7 +21,7 @@ RUN go mod download
 RUN go get fyne.io/fyne/v2@latest
 
 # Build with CGO enabled (required for Fyne)
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o /spidy-gui ./cmd/spidy-gui
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-w -s" -o bin/spidy-gui ./cmd/spidy-gui
 
 # Final stage
 FROM ubuntu:22.04
